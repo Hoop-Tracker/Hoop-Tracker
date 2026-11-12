@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; connect-src https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#111110">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Hoop Tracker">
+  <title>Hoop Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar"><span class="logo" aria-hidden="true"></span><h1>Hoop Tracker</h1></header>
+  <main id="main"></main>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <nav class="tabbar" aria-label="Sections">
+    <button data-tab="practice" aria-current="page"><span class="tab-icon" aria-hidden="true">●</span>Practice</button>
+    <button data-tab="drills"><span class="tab-icon" aria-hidden="true">◆</span>Drills</button>
+    <button data-tab="progress"><span class="tab-icon" aria-hidden="true">▲</span>Progress</button>
+    <button data-tab="settings"><span class="tab-icon" aria-hidden="true">⚙</span>Settings</button>
+  </nav>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
