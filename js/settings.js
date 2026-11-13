@@ -34,7 +34,10 @@ export const MODES = [
   { id: 'dark', label: 'Dark' },
 ];
 
-const DEFAULTS = { mode: 'system', team: 'classic', heatLabel: 'pct', defaultShots: 5, ftShots: 10, handsFree: false, speakBack: true, autoLock: 5, rotateMonths: 6, missDir: false, restSecs: 0 };
+const DEFAULTS = { mode: 'system', team: 'classic', heatLabel: 'pct', defaultShots: 5, ftShots: 10, handsFree: false, speakBack: true, autoLock: 5, rotateMonths: 6, missDir: false, restSecs: 0,
+  layupShots: 5, layupSpots: ['y-rr', 'y-ll'], layupFinish: 'regular', heatMode: 'spots' };
+const LAYUP_SPOT_IDS = ['y-rr', 'y-rl', 'y-ll', 'y-lr', 'y-mr', 'y-ml'];
+const LAYUP_FINISH_IDS = ['', 'regular', 'reverse', 'euro', 'floater', 'power', 'fingerroll', 'other'];
 export const REST_OPTIONS = [0, 15, 30, 45, 60, 90, 120];
 export const AUTO_LOCK = [
   { id: 0, label: 'Every time I leave the app' }, { id: 1, label: 'After 1 minute away' }, { id: 5, label: 'After 5 minutes away' },
@@ -76,6 +79,11 @@ function sanitize(s) {
       rotateMonths: ROTATE.some((o) => o.id === s.rotateMonths) ? s.rotateMonths : DEFAULTS.rotateMonths,
       missDir: s.missDir === true,
       restSecs: REST_OPTIONS.includes(s.restSecs) ? s.restSecs : DEFAULTS.restSecs,
+      layupShots: intIn(s.layupShots, 1, 50, DEFAULTS.layupShots),
+      layupSpots: Array.isArray(s.layupSpots) && s.layupSpots.length && s.layupSpots.every((x) => LAYUP_SPOT_IDS.includes(x))
+        ? LAYUP_SPOT_IDS.filter((x) => s.layupSpots.includes(x)) : [...DEFAULTS.layupSpots],
+      layupFinish: LAYUP_FINISH_IDS.includes(s.layupFinish) ? s.layupFinish : DEFAULTS.layupFinish,
+      heatMode: ['spots', 'areas', 'sides'].includes(s.heatMode) ? s.heatMode : DEFAULTS.heatMode,
     };
   } catch {
     return { ...DEFAULTS };

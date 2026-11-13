@@ -209,7 +209,7 @@ function syncSheet() {
     const field = (label, input, hint) => [h('label', { class: 'field-label', text: label }), input, hint ? h('p', { class: 'muted small', text: hint }) : null];
     const owner = h('input', { class: 'input', autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. my-hoops-team', value: c.owner });
     const repo = h('input', { class: 'input', autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. hoops-data', value: c.repo });
-    const player = h('input', { class: 'input', autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. jettson', value: c.player, maxlength: 23 });
+    const player = h('input', { class: 'input', autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'e.g. sam', value: c.player, maxlength: 23 });
     const token = h('input', { class: 'input', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: c.token ? '•••••••• (saved, leave blank to keep)' : 'github_pat_…' });
     // The team passphrase is chosen here only at first setup; later changes go through Security.
     const settingUp = !c.passphrase;

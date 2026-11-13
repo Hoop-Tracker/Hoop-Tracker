@@ -1,11 +1,12 @@
-import { POSITIONS, ZONES, positionById } from './court.js';
+import { POSITIONS, ZONES, LAYUP_SPOTS, positionById } from './court.js';
 
 export const pct = (made, att) => (att ? Math.round((made / att) * 100) : null);
 export const fmtPct = (made, att) => (att ? `${pct(made, att)}%` : '–');
 const DAY = 86400000;
 
-export const isShooting = (s) => s.kind !== 'freethrow';
+export const isShooting = (s) => s.kind === 'shooting';
 export const isFT = (s) => s.kind === 'freethrow';
+export const isLayup = (s) => s.kind === 'layup';
 
 // Totals for one session. zone: 'all' | zone id | 'ft' | 'pos:<id>'
 export function sessionTotals(session, zone = 'all') {
@@ -30,12 +31,29 @@ export function aggregate(sessions) {
   for (const s of sessions) {
     for (const [pos, list] of Object.entries(s.shots)) {
       const p = positionById(pos);
-      if (!p || p.zone === 'ft') continue;
+      if (!p || p.zone === 'ft' || p.zone === 'layup') continue;
       const m = list.filter(Boolean).length;
       for (const b of [byPos[pos], byZone[p.zone], all]) { b.made += m; b.att += list.length; }
     }
   }
   return { byPos, byZone, all };
+}
+
+// Layup totals by approach side, by finishing hand, and per side × hand spot.
+export function layupAggregate(sessions) {
+  const bySide = { left: blank(), mid: blank(), right: blank() };
+  const byHand = { left: blank(), right: blank() };
+  const byPos = Object.fromEntries(LAYUP_SPOTS.map((p) => [p.id, blank()]));
+  const all = blank();
+  for (const s of sessions) {
+    for (const [pos, list] of Object.entries(s.shots)) {
+      const p = positionById(pos);
+      if (!p || p.zone !== 'layup') continue;
+      const m = list.filter(Boolean).length;
+      for (const b of [bySide[p.side], byHand[p.hand], byPos[pos], all]) { b.made += m; b.att += list.length; }
+    }
+  }
+  return { bySide, byHand, byPos, all };
 }
 
 export const RANGES = [
@@ -129,12 +147,23 @@ export function personalBests(sessions) {
     if (t.att >= 10 && (!ftBest || t.made / t.att > ftBest.made / ftBest.att)) ftBest = { ...t, s };
     ftRun = Math.max(ftRun, longestRun(s.shots.ft || []));
   }
-  return { bestSession, mostShots, bestRun, bestSpot, ftBest, ftRun, days: practiceDayStreaks(sessions) };
+  // Layups: best session (10+ layups) and longest run of makes in one session.
+  let layupBest = null, layupRun = 0;
+  for (const s of sessions.filter(isLayup)) {
+    const t = sessionTotals(s);
+    if (t.att >= 10 && (!layupBest || t.made / t.att > layupBest.made / layupBest.att)) layupBest = { ...t, s };
+    layupRun = Math.max(layupRun, longestRun(flatShots(s)));
+  }
+  return { bestSession, mostShots, bestRun, bestSpot, ftBest, ftRun, layupBest, layupRun, days: practiceDayStreaks(sessions) };
 }
+
+export const LAYUP_GOAL_SCOPES = [['layup', 'Layups (both hands)'], ['layup:lh', 'Left-hand layups'], ['layup:rh', 'Right-hand layups']];
 
 export function goalScopeLabel(scope) {
   if (scope === 'all') return 'Overall shooting';
   if (scope === 'ft') return 'Free throws';
+  const lay = LAYUP_GOAL_SCOPES.find(([id]) => id === scope);
+  if (lay) return lay[1];
   if (scope.startsWith('zone:')) return ZONES[scope.slice(5)]?.label || scope;
   return positionById(scope.slice(4))?.name || scope;
 }
@@ -146,6 +175,12 @@ export const GOAL_WINDOWS = [
 ];
 
 export function goalProgress(goal, sessions) {
+  if (goal.scope.startsWith('layup')) {
+    const la = layupAggregate(sessionsInRange(sessions.filter(isLayup), goal.window));
+    const t = goal.scope === 'layup:lh' ? la.byHand.left : goal.scope === 'layup:rh' ? la.byHand.right : la.all;
+    const value = pct(t.made, t.att);
+    return { ...t, value, done: value !== null && value >= goal.target };
+  }
   const pool = goal.scope === 'ft' ? sessions.filter(isFT) : sessions.filter(isShooting);
   const inWin = sessionsInRange(pool, goal.window);
   const zone = goal.scope === 'all' ? 'all' : goal.scope === 'ft' ? 'ft' : goal.scope.startsWith('zone:') ? goal.scope.slice(5) : goal.scope;

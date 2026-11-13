@@ -10,7 +10,8 @@ export const ui = {
   player: 'me',        // whose progress is shown
   compare: '',         // second player to compare with
   shotType: 'all',     // progress filter
-  editingDrill: null,  // drill id being edited, or 'new'
+  location: 'all',     // progress filter: 'all' or a lower-cased location
+  progressPage: 'overview', // progress sub-page: 'overview' | 'shooting'  editingDrill: null,  // drill id being edited, or 'new'
   editingSession: null, // finished session id whose shots are being corrected
 };
 
@@ -57,6 +58,22 @@ export function openSheet(build) {
 }
 
 // Small numeric stepper.
+// Text box for where a session happened, with chips for recently used locations.
+// Returns { input, els } so callers can place the label themselves.
+let locSeq = 0;
+export function locationInput(value = '', recent = []) {
+  const input = h('input', { class: 'input', id: `loc-${++locSeq}`, maxlength: 40, autocomplete: 'off', autocapitalize: 'words',
+    placeholder: 'e.g. Home driveway, YMCA court 2', value });
+  const chips = recent.length ? h('div', { class: 'chips small-chips loc-chips' },
+    recent.slice(0, 5).map((loc) => h('button', { type: 'button', class: 'chip', 'aria-pressed': String(loc === value),
+      onclick: (e) => {
+        input.value = loc;
+        for (const c of e.currentTarget.parentNode.children) c.setAttribute('aria-pressed', String(c === e.currentTarget));
+      } }, loc))) : null;
+  input.addEventListener('input', () => { if (chips) for (const c of chips.children) c.setAttribute('aria-pressed', String(c.textContent === input.value)); });
+  return { input, els: [input, chips] };
+}
+
 export function stepper(value, { min = 1, max = 50, onChange, label }) {
   const out = h('span', { class: 'stepper-value', 'aria-live': 'polite', text: String(value) });
   const set = (v) => { const n = Math.max(min, Math.min(max, v)); out.textContent = String(n); onChange(n); };

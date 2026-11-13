@@ -2,7 +2,7 @@
 // Shapes are stored as { t: type, c: colour index, p: [x,y,…] (court units), s?: text }
 // which keeps them tiny, easy to validate and quick to sync.
 import { h, svg } from './dom.js';
-import { POSITIONS, drawCourt } from './court.js';
+import { POSITIONS, LAYUP_SPOTS, drawCourt } from './court.js';
 import { SHAPE_TYPES } from './store.js';
 
 const TOOLS = [
@@ -46,7 +46,7 @@ export function diagramSvg(shapes, plan = null, { label = 'Drill diagram' } = {}
   const root = svg('svg', { class: 'diagram', 'aria-label': label });
   const spots = drawCourt(root);
   if (plan) {
-    for (const p of POSITIONS) {
+    for (const p of [...POSITIONS, ...LAYUP_SPOTS]) {
       if (plan[p.id]) spots.append(svg('circle', { cx: p.x, cy: p.y, r: 14, class: 'plan-dot' }));
     }
   }

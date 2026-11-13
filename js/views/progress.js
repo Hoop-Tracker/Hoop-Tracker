@@ -1,16 +1,17 @@
 import { h, svg } from '../dom.js';
-import { POSITIONS, ZONES, drawCourt, positionById } from '../court.js';
+import { POSITIONS, ZONES, AREAS, SIDES, LAYUP_SPOTS, LAYUP_SIDES, drawCourt, positionById } from '../court.js';
 import * as store from '../store.js';
-import { shotTypeLabel } from '../store.js';
+import { shotTypeLabel, finishLabel } from '../store.js';
 import {
   aggregate, sessionTotals, sessionsInRange, previousRange, delta, RANGES, fmtPct, pct, durationLabel, shortDate, dateLabel,
-  isShooting, isFT, personalBests, goalProgress, goalScopeLabel, GOAL_WINDOWS, longestRun, missCounts,
+  isShooting, isFT, isLayup, layupAggregate, LAYUP_GOAL_SCOPES, personalBests, goalProgress, goalScopeLabel, GOAL_WINDOWS, longestRun, missCounts,
 } from '../stats.js';
 import { trendChart } from '../chart.js';
 import { getSettings, updateSettings } from '../settings.js';
 import { getFriends } from '../sync.js';
-import { ui, render, setTab, toast, openSheet } from '../ui.js';
+import { ui, render, setTab, toast, openSheet, locationInput } from '../ui.js';
 import { editSessionView, startEditing } from './edit-session.js';
+import { shootingCards } from './shooting-stats.js';
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const playerLabel = (key) => (key === 'me' ? 'You' : cap(key));
@@ -22,6 +23,16 @@ function playerData(key) {
 }
 
 const byType = (sessions) => (ui.shotType === 'all' ? sessions : sessions.filter((s) => (s.shotType || 'none') === ui.shotType));
+// Location filter matches case-insensitively, so "YMCA" and "ymca" are the same place (also across teammates).
+const byLoc = (sessions) => (ui.location === 'all' ? sessions : sessions.filter((s) => (s.location || '').toLowerCase() === ui.location));
+function locationsOf(sessions) {
+  const m = new Map();
+  for (let i = sessions.length - 1; i >= 0; i--) {
+    const loc = sessions[i].location;
+    if (loc && !m.has(loc.toLowerCase())) m.set(loc.toLowerCase(), loc);
+  }
+  return m; // lower-case key → display name, most recent first
+}
 const heatClass = (made, att) => (!att ? 'heat-none' : `heat-${Math.min(4, Math.floor(pct(made, att) / 20))}`);
 function diffClass(d) {
   if (d === null) return 'heat-none';
@@ -54,11 +65,18 @@ export function progressView() {
       isMe ? goalsCard(data.goals, [], true) : null);
   }
 
+  // Location filter (only places that appear in this player's sessions)
+  const locations = locationsOf(data.sessions);
+  if (ui.location !== 'all' && !locations.has(ui.location)) ui.location = 'all';
+  const sessions = byLoc(data.sessions);
+  const locName = ui.location === 'all' ? null : locations.get(ui.location);
+
   // Shot-type filter (only types that appear in this player's sessions)
-  const types = [...new Set(data.sessions.filter(isShooting).map((s) => s.shotType || 'none'))];
+  const types = [...new Set(sessions.filter(isShooting).map((s) => s.shotType || 'none'))];
   if (ui.shotType !== 'all' && !types.includes(ui.shotType)) ui.shotType = 'all';
-  const shooting = byType(data.sessions.filter(isShooting));
-  const ftSessions = data.sessions.filter(isFT);
+  const shooting = byType(sessions.filter(isShooting));
+  const ftSessions = sessions.filter(isFT);
+  const layupSessions = sessions.filter(isLayup);
 
   const single = shooting.find((s) => s.id === ui.range);
   if (!single && !RANGES.some((r) => r.id === ui.range)) ui.range = 'last5';
@@ -70,7 +88,7 @@ export function progressView() {
 
   const cmpKey = ui.compare;
   const cmpData = cmpKey ? playerData(cmpKey) : null;
-  const cmpShooting = cmpData ? byType(cmpData.sessions.filter(isShooting)) : null;
+  const cmpShooting = cmpData ? byType(byLoc(cmpData.sessions).filter(isShooting)) : null;
   const cmpAgg = cmpShooting ? aggregate(sessionsInRange(cmpShooting, rangeId)) : null;
 
   const rangeChips = h('div', { class: 'chips' },
@@ -78,6 +96,22 @@ export function progressView() {
   const typeChips = types.length > 1 ? h('div', { class: 'chips small-chips' },
     [['all', 'All shot types'], ...types.map((t) => [t, t === 'none' ? 'Standard / any' : shotTypeLabel(t)])].map(([id, label]) =>
       h('button', { class: 'chip', 'aria-pressed': String(ui.shotType === id), onclick: () => { ui.shotType = id; render(); } }, label))) : null;
+
+  let locFilter = null;
+  if (locations.size) {
+    const pick = (id) => { ui.location = id; ui.inspect = null; if (!RANGES.some((r) => r.id === ui.range)) ui.range = 'last5'; render(); };
+    if (locations.size <= 5) {
+      locFilter = h('div', { class: 'chips small-chips' },
+        [['all', 'All locations'], ...[...locations].map(([id, name]) => [id, `📍 ${name}`])].map(([id, label]) =>
+          h('button', { class: 'chip', 'aria-pressed': String(ui.location === id), onclick: () => pick(id) }, label)));
+    } else {
+      const sel = h('select', { class: 'select compact', 'aria-label': 'Location' },
+        h('option', { value: 'all', text: '📍 All locations' }),
+        [...locations].map(([id, name]) => h('option', { value: id, text: `📍 ${name}`, selected: ui.location === id })));
+      sel.addEventListener('change', () => pick(sel.value));
+      locFilter = sel;
+    }
+  }
 
   let compareRow = null;
   if (friendNames.length) {
@@ -89,7 +123,23 @@ export function progressView() {
   }
 
   const rangeTitle = single ? `Session · ${shortDate(single.startedAt)}` : RANGES.find((r) => r.id === ui.range).label;
-  const titleText = `${isMe ? '' : `${playerLabel(ui.player)} · `}${rangeTitle}`;
+  const titleText = `${isMe ? '' : `${playerLabel(ui.player)} · `}${rangeTitle}${locName && !single ? ` · ${locName}` : ''}`;
+
+  const pageTabs = h('div', { class: 'segmented two', role: 'tablist', 'aria-label': 'Progress pages' },
+    [['overview', 'Overview'], ['shooting', 'Shooting']].map(([id, label]) =>
+      h('button', { role: 'tab', 'aria-checked': String(ui.progressPage === id), 'aria-selected': String(ui.progressPage === id),
+        onclick: () => { ui.progressPage = id; ui.inspect = null; render(); window.scrollTo(0, 0); } }, label)));
+
+  if (ui.progressPage === 'shooting') {
+    return h('section', { class: 'view progress' },
+      playerChips, pageTabs, rangeChips, locFilter, typeChips, compareRow,
+      h('h2', { class: 'section-title', text: titleText }),
+      shooting.length
+        ? shootingCards({ shooting, agg, prevAgg, prev, rangeTitle, rangeShort: single ? 'Session' : RANGES.find((r) => r.id === ui.range).label,
+          rangeId, locations, byLocPool: byType(data.sessions.filter(isShooting)), byTypePool: byLoc(data.sessions).filter(isShooting),
+          who: playerLabel(ui.player), cmp: cmpAgg ? { name: playerLabel(cmpKey), shooting: cmpShooting, agg: cmpAgg } : null })
+        : h('div', { class: 'card' }, h('p', { class: 'muted', text: 'No shooting sessions match these filters yet.' })));
+  }
 
   const tiles = h('div', { class: 'tiles' },
     tile('Shooting', fmtPct(agg.all.made, agg.all.att), prevAgg ? deltaEl(delta(agg.all, prevAgg.all), ' pts') : null),
@@ -99,11 +149,12 @@ export function progressView() {
   const prevNote = prev ? h('p', { class: 'muted small', text: `▲▼ = change in percentage points vs ${prev.label}.` }) : null;
 
   const sections = [
-    playerChips, rangeChips, typeChips, compareRow,
+    playerChips, pageTabs, rangeChips, locFilter, typeChips, compareRow,
     h('h2', { class: 'section-title', text: titleText }),
+    single?.location ? h('p', { class: 'muted small', text: `📍 ${single.location}` }) : null,
     single?.note ? h('p', { class: 'session-note', text: `“${single.note}”` }) : null,
     tiles,
-    heatCard(agg, rangeTitle, data.sessions, cmpKey, cmpAgg, selected),
+    heatCard(agg, rangeTitle, sessions, cmpKey, cmpAgg, selected),
     zoneCard(agg, prevAgg, prev, cmpKey, cmpAgg, shooting),
     prevNote,
     missCard(selected),
@@ -112,24 +163,73 @@ export function progressView() {
         h('button', { class: 'chip', 'aria-pressed': String(ui.trendZone === id), onclick: () => { ui.trendZone = id; render(); } }, label))),
       trendChart([{ label: playerLabel(ui.player), sessions: shooting, cls: 's1' },
         ...(cmpShooting ? [{ label: playerLabel(cmpKey), sessions: cmpShooting, cls: 's2' }] : [])], ui.trendZone)),
-    calendarCard(data.sessions, isMe),
+    calendarCard(sessions, isMe),
     ftSessions.length || cmpData?.sessions.some(isFT) ? ftCard(ftSessions, rangeId, cmpKey, cmpData) : null,
-    bestsCard(data.sessions),
+    layupSessions.length || cmpData?.sessions.some(isLayup) ? layupCard(layupSessions, rangeId, cmpKey, cmpData) : null,
+    bestsCard(sessions),
     goalsCard(data.goals, data.sessions, isMe),
-    friendNames.length ? leaderboard(['me', ...friendNames], rangeId) : null,
-    sessionsCard(data.sessions, isMe),
+    friendNames.length ? leaderboard(['me', ...friendNames], rangeId, locName) : null,
+    sessionsCard(sessions, isMe),
   ];
   return h('section', { class: 'view progress' }, ...sections);
 }
 
 const tile = (label, value, extra) => h('div', { class: 'tile' }, h('div', { class: 'tile-value', text: value }), h('div', { class: 'tile-label' }, label, extra ? ' ' : '', extra));
 
+// Pooled made/attempts over the spots in an area (same as averaging the spots when each spot gets the same number of shots).
+function areaTotals(byPos, area) {
+  return POSITIONS.filter(area.test).reduce((t, p) => ({ made: t.made + byPos[p.id].made, att: t.att + byPos[p.id].att }), { made: 0, att: 0 });
+}
+
+// "Left 45% · Right 38%: 7 pts better from the left"
+function sideSummary(byPos) {
+  const [l, r] = SIDES.map((s) => areaTotals(byPos, s));
+  if (!l.att || !r.att) return null;
+  const d = pct(l.made, l.att) - pct(r.made, r.att);
+  return h('p', { class: 'side-summary' },
+    h('span', {}, 'Left ', h('strong', { text: fmtPct(l.made, l.att) })), ' · ',
+    h('span', {}, 'Right ', h('strong', { text: fmtPct(r.made, r.att) })),
+    h('span', { class: 'muted', text: Math.abs(d) < 3 ? '  Even on both sides' : `  ${Math.abs(d)} pts better from the ${d > 0 ? 'left' : 'right'}` }));
+}
+
+function drawAreas(court, g, list, agg, cmpAgg) {
+  const layer = svg('g', { class: 'areas' });
+  for (const a of list) {
+    const s = areaTotals(agg.byPos, a);
+    let label, cls;
+    if (cmpAgg) {
+      const c = areaTotals(cmpAgg.byPos, a);
+      const d = s.att && c.att ? pct(s.made, s.att) - pct(c.made, c.att) : null;
+      label = d === null ? '–' : `${d > 0 ? '+' : ''}${d}`;
+      cls = diffClass(d);
+    } else {
+      label = fmtPct(s.made, s.att);
+      cls = heatClass(s.made, s.att);
+    }
+    const sel = ui.inspect === `area:${a.id}`;
+    const el = svg('g', { class: `area ${cls}${sel ? ' selected' : ''}`, role: 'button', tabindex: 0, 'aria-label': `${a.label}: ${s.made} of ${s.att}` },
+      svg('path', { d: a.d, class: 'area-fill' }),
+      svg('text', { x: a.lx, y: a.ly - 6, class: 'area-pct', text: label }),
+      cmpAgg ? null : svg('text', { x: a.lx, y: a.ly + 20, class: 'area-sub', text: s.att ? `${s.made}/${s.att}` : 'no shots' }));
+    const tap = () => { ui.inspect = sel ? null : `area:${a.id}`; render(); };
+    el.addEventListener('click', tap);
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tap(); } });
+    layer.append(el);
+  }
+  court.insertBefore(layer, g);
+  // Faint markers show where the spots are; the area labels carry the numbers.
+  for (const p of POSITIONS) g.append(svg('circle', { cx: p.x, cy: p.y, r: 5, class: 'area-spot' }));
+}
+
 function heatCard(agg, rangeTitle, allSessions, cmpKey, cmpAgg, selected) {
   const labelMode = getSettings().heatLabel;
   const toggleLabels = () => updateSettings({ heatLabel: labelMode === 'pct' ? 'made' : 'pct' });
+  const mode = getSettings().heatMode; // remembered between app opens
+  const areaList = mode === 'areas' ? AREAS : mode === 'sides' ? SIDES : null;
   const court = svg('svg', { 'aria-label': `Shooting heatmap, ${rangeTitle}` });
   const g = drawCourt(court);
-  for (const p of POSITIONS) {
+  if (areaList) drawAreas(court, g, areaList, agg, cmpAgg);
+  for (const p of areaList ? [] : POSITIONS) {
     const s = agg.byPos[p.id];
     let label, cls;
     if (cmpAgg) {
@@ -153,16 +253,32 @@ function heatCard(agg, rangeTitle, allSessions, cmpKey, cmpAgg, selected) {
 
   const who = playerLabel(ui.player);
   const key = cmpAgg
-    ? h('span', { class: 'heat-key static' }, h('b', { text: '±' }), ` ${who} vs ${playerLabel(cmpKey)}`)
+    ? h('span', { class: 'heat-key static' }, h('b', { text: '±' }), ` vs ${playerLabel(cmpKey)}`)
+    : areaList ? null
     : h('button', { class: 'heat-key', onclick: () => { toggleLabels(); render(); }, 'aria-label': `Labels show ${labelMode === 'pct' ? 'percentage' : 'shots made out of taken'}. Tap to switch.` },
       labelMode === 'pct' ? h('span', {}, h('b', { text: '%' }), ' Percentage') : h('span', {}, h('b', { text: 'M/T' }), ' Made / Taken'));
+  const modes = h('div', { class: 'segmented mini', role: 'radiogroup', 'aria-label': 'Heatmap view' },
+    [['spots', 'Spots'], ['areas', 'Areas'], ['sides', 'Sides']].map(([id, label]) =>
+      h('button', { role: 'radio', 'aria-checked': String(mode === id), onclick: () => { updateSettings({ heatMode: id }); ui.inspect = null; render(); } }, label)));
   const legend = cmpAgg
     ? h('div', { class: 'heat-legend' }, h('span', { text: `${playerLabel(cmpKey)} better` }),
       ['neg-3', 'neg-2', 'neg-1', '0', 'pos-1', 'pos-2', 'pos-3'].map((c) => h('span', { class: `swatch diff-${c}` })), h('span', { text: `${who} better` }))
     : h('div', { class: 'heat-legend' }, h('span', { text: '0%' }), [0, 1, 2, 3, 4].map((i) => h('span', { class: `swatch heat-${i}` })), h('span', { text: '100%' }));
 
   let inspect;
-  if (ui.inspect) {
+  const area = areaList && ui.inspect?.startsWith('area:') ? areaList.find((a) => `area:${a.id}` === ui.inspect) : null;
+  if (area) {
+    const t = areaTotals(agg.byPos, area);
+    const c = cmpAgg ? areaTotals(cmpAgg.byPos, area) : null;
+    inspect = h('div', { class: 'inspect' },
+      h('strong', { text: area.label }),
+      h('span', { text: `${who}, ${rangeTitle}: ${t.made}/${t.att} (${fmtPct(t.made, t.att)})` }),
+      c ? h('span', { text: `${playerLabel(cmpKey)}: ${c.made}/${c.att} (${fmtPct(c.made, c.att)})` }) : null,
+      h('span', { class: 'muted', text: POSITIONS.filter(area.test).map((p) => `${p.short} ${fmtPct(agg.byPos[p.id].made, agg.byPos[p.id].att)}`).join(' · ') }));
+  } else if (areaList) {
+    inspect = h('div', {},
+      h('p', { class: 'muted small center', text: `Tap an area for its spots.${mode === 'sides' ? ' Middle spots (key, free-throw line, top, half court) count for neither side.' : ''}` }));
+  } else if (ui.inspect && positionById(ui.inspect)) {
     const p = positionById(ui.inspect);
     const r = agg.byPos[p.id];
     const life = aggregate(allSessions.filter(isShooting)).byPos[p.id];
@@ -176,7 +292,8 @@ function heatCard(agg, rangeTitle, allSessions, cmpKey, cmpAgg, selected) {
   } else {
     inspect = h('p', { class: 'muted small center', text: cmpAgg ? 'Tap a spot for details.' : 'Tap a spot to switch between % and made/taken.' });
   }
-  return h('div', { class: 'card heat-card' }, key, h('div', { class: 'court-wrap' }, court), legend, inspect);
+  return h('div', { class: 'card heat-card' }, h('div', { class: 'heat-top' }, modes, key), h('div', { class: 'court-wrap' }, court), legend,
+    areaList && !cmpAgg ? sideSummary(agg.byPos) : null, inspect);
 }
 
 function zoneCard(agg, prevAgg, prev, cmpKey, cmpAgg, shooting) {
@@ -272,11 +389,48 @@ function daySheet(label, list, isMe) {
   ]);
 }
 
+// Layups: side × hand table, weak-hand gap, finishes, trend. Never mixed into shooting %.
+function layupCard(layups, rangeId, cmpKey, cmpData) {
+  const inRange = sessionsInRange(layups, rangeId);
+  const la = layupAggregate(inRange);
+  const rangeLabel = RANGES.find((r) => r.id === rangeId)?.label || 'Recent';
+  const cell = (v) => h('td', {}, v.att ? h('span', {}, h('strong', { text: fmtPct(v.made, v.att) }), h('span', { class: 'muted small', text: ` ${v.made}/${v.att}` })) : '–');
+  const add = (a, b) => ({ made: a.made + b.made, att: a.att + b.att });
+  const rows = LAYUP_SIDES.map(([side, label]) => {
+    const [l, r] = ['left', 'right'].map((hand) => la.byPos[LAYUP_SPOTS.find((p) => p.side === side && p.hand === hand).id]);
+    return { label, l, r, all: add(l, r) };
+  }).filter((x) => x.all.att);
+  const { left: lh, right: rh } = la.byHand;
+  let handNote = null;
+  if (lh.att && rh.att) {
+    const d = pct(lh.made, lh.att) - pct(rh.made, rh.att);
+    handNote = h('p', { class: 'muted small', text: Math.abs(d) < 3 ? 'Both hands are about even.' : `Your ${d > 0 ? 'right' : 'left'} hand is ${Math.abs(d)} pts behind.` });
+  }
+  const finishes = [...new Set(inRange.map((s) => s.finish || ''))];
+  const finishRows = finishes.length > 1 ? finishes.map((f) => {
+    const a = layupAggregate(inRange.filter((s) => (s.finish || '') === f)).all;
+    return h('li', {}, h('span', { class: 'muted', text: finishLabel(f || null) }), h('span', {}, h('strong', { text: fmtPct(a.made, a.att) }), h('span', { class: 'muted small', text: ` ${a.made}/${a.att}` })));
+  }) : null;
+  const cmpLayups = cmpData ? byLoc(cmpData.sessions).filter(isLayup) : null;
+  return h('div', { class: 'card' }, h('h3', { text: 'Layups' }),
+    h('div', { class: 'tiles' },
+      tile(rangeLabel, fmtPct(la.all.made, la.all.att)),
+      tile('Left hand', fmtPct(lh.made, lh.att)),
+      tile('Right hand', fmtPct(rh.made, rh.att))),
+    rows.length ? h('table', { class: 'zones layup-table' },
+      h('thead', {}, h('tr', {}, ['', 'Left hand', 'Right hand', 'Total'].map((t) => h('th', { text: t })))),
+      h('tbody', {}, rows.map((x) => h('tr', {}, h('td', { text: x.label }), cell(x.l), cell(x.r), cell(x.all))))) : h('p', { class: 'muted small', text: 'No layups in this range.' }),
+    handNote,
+    finishRows ? h('ul', { class: 'bests' }, finishRows) : null,
+    trendChart([{ label: playerLabel(ui.player), sessions: layups, cls: 's1' },
+      ...(cmpLayups?.length ? [{ label: playerLabel(cmpKey), sessions: cmpLayups, cls: 's2' }] : [])], 'all'));
+}
+
 function ftCard(ftSessions, rangeId, cmpKey, cmpData) {
   const inRange = sessionsInRange(ftSessions, rangeId);
   const t = inRange.reduce((a, s) => { const x = sessionTotals(s, 'ft'); a.made += x.made; a.att += x.att; return a; }, { made: 0, att: 0 });
   const best = Math.max(0, ...ftSessions.map((s) => longestRun(s.shots.ft || [])));
-  const cmpFT = cmpData ? cmpData.sessions.filter(isFT) : null;
+  const cmpFT = cmpData ? byLoc(cmpData.sessions).filter(isFT) : null;
   return h('div', { class: 'card' }, h('h3', { text: 'Free throws' }),
     h('div', { class: 'tiles' },
       tile(RANGES.find((r) => r.id === rangeId)?.label || 'Recent', fmtPct(t.made, t.att)),
@@ -296,7 +450,8 @@ function bestsCard(sessions) {
       row('Best spot (15+ shots)', b.bestSpot ? b.bestSpot.p.name : '–', b.bestSpot ? fmtPct(b.bestSpot.made, b.bestSpot.att) : ''),
       row('Most shots in a session', b.mostShots ? String(b.mostShots.att) : '–'),
       row('Practice-day streak', `${b.days.current} day${b.days.current === 1 ? '' : 's'}`, `(longest ${b.days.longest})`),
-      b.ftBest || b.ftRun ? row('Free throws: best session / streak', b.ftBest ? fmtPct(b.ftBest.made, b.ftBest.att) : '–', `· ${b.ftRun} in a row`) : null));
+      b.ftBest || b.ftRun ? row('Free throws: best session / streak', b.ftBest ? fmtPct(b.ftBest.made, b.ftBest.att) : '–', `· ${b.ftRun} in a row`) : null,
+      b.layupBest || b.layupRun ? row('Layups: best session (10+) / streak', b.layupBest ? fmtPct(b.layupBest.made, b.layupBest.att) : '–', `· ${b.layupRun} in a row`) : null));
 }
 
 function goalsCard(goals, sessions, editable) {
@@ -326,7 +481,8 @@ function addGoalSheet() {
       h('option', { value: 'all', text: 'Overall shooting' }),
       h('optgroup', { label: 'Zones' }, Object.entries(ZONES).map(([id, z]) => h('option', { value: `zone:${id}`, text: z.label }))),
       h('optgroup', { label: 'Spots' }, POSITIONS.map((p) => h('option', { value: `pos:${p.id}`, text: p.name }))),
-      h('option', { value: 'ft', text: 'Free throws' }));
+      h('option', { value: 'ft', text: 'Free throws' }),
+      h('optgroup', { label: 'Layups' }, LAYUP_GOAL_SCOPES.map(([id, label]) => h('option', { value: id, text: label }))));
     const target = h('input', { class: 'input', type: 'number', min: 1, max: 100, value: 40, inputmode: 'numeric' });
     const win = h('select', { class: 'select' }, GOAL_WINDOWS.map((w) => h('option', { value: w.id, text: cap(w.label) })));
     const by = h('input', { class: 'input', type: 'date' });
@@ -348,16 +504,16 @@ function addGoalSheet() {
   });
 }
 
-function leaderboard(keys, rangeId) {
+function leaderboard(keys, rangeId, locName) {
   const rows = keys.map((k) => {
     const d = playerData(k);
-    const a = aggregate(sessionsInRange(byType(d.sessions.filter(isShooting)), rangeId));
+    const a = aggregate(sessionsInRange(byType(byLoc(d.sessions).filter(isShooting)), rangeId));
     return { k, a };
   }).sort((x, y) => (pct(y.a.all.made, y.a.all.att) ?? -1) - (pct(x.a.all.made, x.a.all.att) ?? -1));
   const zoneIds = Object.keys(ZONES);
   const leader = Object.fromEntries(zoneIds.map((z) => [z, Math.max(...rows.map((r) => pct(r.a.byZone[z].made, r.a.byZone[z].att) ?? -1))]));
   return h('div', { class: 'card' },
-    h('h3', { text: `Leaderboard · ${RANGES.find((r) => r.id === rangeId)?.label}` }),
+    h('h3', { text: `Leaderboard · ${RANGES.find((r) => r.id === rangeId)?.label}${locName ? ` · ${locName}` : ''}` }),
     h('table', { class: 'zones leaderboard' },
       h('thead', {}, h('tr', {}, h('th', { text: 'Player' }), h('th', { text: 'All' }), zoneIds.map((z) => h('th', { text: { close: 'Close', mid: 'Mid', three: '3PT', deep: 'Deep' }[z] })))),
       h('tbody', {}, rows.map(({ k, a }) => h('tr', { class: k === 'me' ? 'me' : '' },
@@ -378,23 +534,40 @@ function sessionsCard(sessions, isMe) {
         h('button', { class: 'session-row', onclick: () => sessionSheet(s, isMe) },
           h('span', { class: 'session-when' },
             h('strong', { text: shortDate(s.startedAt) }),
-            h('span', { class: 'muted small', text: [s.name, s.shotType ? shotTypeLabel(s.shotType) : null, durationLabel(s), s.note ? '📝' : null].filter(Boolean).join(' · ') })),
+            h('span', { class: 'muted small', text: [s.name, typeText(s), s.location ? `📍 ${s.location}` : null, durationLabel(s), s.note ? '📝' : null].filter(Boolean).join(' · ') })),
           h('span', { class: 'session-score', text: `${t.made}/${t.att} · ${fmtPct(t.made, t.att)}` })));
     })));
 }
 
+// Shot type for shooting sessions, finish for layups.
+const typeText = (s) => (s.shotType ? shotTypeLabel(s.shotType) : isLayup(s) ? finishLabel(s.finish) : null);
+
 function sessionSheet(s, isMe) {
   const ft = isFT(s);
+  const layup = isLayup(s);
   const t = sessionTotals(s, ft ? 'ft' : 'all');
-  const a = ft ? null : aggregate([s]);
+  const a = ft || layup ? null : aggregate([s]);
+  const la = layup ? layupAggregate([s]) : null;
   openSheet((close) => {
     const note = isMe ? h('textarea', { class: 'textarea', maxlength: 500, rows: 3, placeholder: 'Add a note…' }) : null;
     if (note) note.value = s.note || '';
+    const loc = isMe ? locationInput(s.location || '', store.recentLocations()) : null;
+    // Save any note / location changes before leaving the sheet. Returns true if something changed.
+    saveEdits = () => {
+      let changed = false;
+      if (note && note.value.trim() !== (s.note || '')) { store.setSessionNote(s.id, note.value.trim()); changed = true; }
+      if (loc && store.cleanLocation(loc.input.value) !== (s.location || '')) { store.setSessionLocation(s.id, loc.input.value); changed = true; }
+      return changed;
+    };
     return [
       h('h2', { text: shortDate(s.startedAt) }),
-      h('p', { class: 'muted', text: [s.name, s.shotType ? shotTypeLabel(s.shotType) : null, durationLabel(s)].filter(Boolean).join(' · ') }),
+      h('p', { class: 'muted', text: [s.name, typeText(s), durationLabel(s)].filter(Boolean).join(' · ') }),
+      !isMe && s.location ? h('p', { class: 'muted', text: `📍 ${s.location}` }) : null,
+      loc ? h('label', { class: 'field-label', for: loc.input.id, text: 'Location' }) : null, ...(loc ? loc.els : []),
       h('p', { class: 'big-line', text: `${t.made}/${t.att} · ${fmtPct(t.made, t.att)}` }),
       ft ? h('p', { class: 'muted', text: `Longest streak: ${longestRun(s.shots.ft || [])} in a row` })
+        : layup ? h('p', { class: 'muted small', text: [...LAYUP_SIDES.map(([id, label]) => [label, la.bySide[id]]), ['Left hand', la.byHand.left], ['Right hand', la.byHand.right]]
+          .filter(([, v]) => v.att).map(([label, v]) => `${label} ${v.made}/${v.att}`).join(' · ') })
         : h('p', { class: 'muted small', text: Object.entries(ZONES).map(([id, z]) => `${z.label} ${fmtPct(a.byZone[id].made, a.byZone[id].att)}`).join(' · ') }),
       isMe ? note : s.note ? h('p', { class: 'session-note', text: `“${s.note}”` }) : null,
       h('div', { class: 'sheet-actions' },
@@ -403,17 +576,18 @@ function sessionSheet(s, isMe) {
           store.deleteSession(s.id); if (ui.range === s.id) ui.range = 'last5'; close(); render();
         } }, 'Delete') : null,
         isMe ? h('button', { class: 'btn-secondary', onclick: () => {
-          if (note && note.value.trim() !== (s.note || '')) store.setSessionNote(s.id, note.value.trim());
+          saveEdits();
           close(); startEditing(s);
-        } }, 'Edit shots & misses') : null,
-        !ft ? h('button', { class: 'btn-secondary', onclick: () => {
-          if (note && note.value.trim() !== (s.note || '')) store.setSessionNote(s.id, note.value.trim());
-          ui.range = s.id; ui.inspect = null; ui.shotType = 'all'; close(); render(); window.scrollTo(0, 0);
+        } }, layup ? 'Edit layups' : 'Edit shots & misses') : null,
+        isShooting(s) ? h('button', { class: 'btn-secondary', onclick: () => {
+          saveEdits();
+          ui.range = s.id; ui.inspect = null; ui.shotType = 'all'; ui.location = 'all'; close(); render(); window.scrollTo(0, 0);
         } }, 'Show on court') : null,
         h('button', { class: 'btn-primary', onclick: () => {
-          if (note && note.value.trim() !== (s.note || '')) { store.setSessionNote(s.id, note.value.trim()); toast('Note saved.'); render(); }
+          if (saveEdits()) { toast('Saved.'); render(); }
           close();
         } }, isMe ? 'Done' : 'Close')),
     ];
   });
 }
+let saveEdits = () => false; // set by sessionSheet's builder

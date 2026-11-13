@@ -1,12 +1,13 @@
 import { h, svg } from '../dom.js';
-import { ZONES, FT_SPOT, drawCourt, positionById, planSpots } from '../court.js';
+import { FT_SPOT, LAYUP_SPOTS, LAYUP_SIDES, drawCourt, positionById, planSpots, zoneLabel, layupSideLabels } from '../court.js';
 import * as store from '../store.js';
-import { SHOT_TYPES, shotTypeLabel } from '../store.js';
+import { SHOT_TYPES, shotTypeLabel, LAYUP_FINISHES, finishLabel } from '../store.js';
 import { sessionTotals, fmtPct, dateLabel, currentRun } from '../stats.js';
 import { getSettings, updateSettings } from '../settings.js';
 import { voiceSupported, parseUtterance, VoiceListener } from '../voice.js';
-import { ui, render, setTab, toast, buzz, openSheet, stepper, onNextRender } from '../ui.js';
+import { ui, render, setTab, toast, buzz, openSheet, stepper, onNextRender, locationInput } from '../ui.js';
 import { startEditing } from './edit-session.js';
+import { drillSummary, drillSession } from './drills.js';
 
 let advanceTimer = null;
 let standardShotType = 'standing'; // plain spot-to-spot shooting is the usual standard session
@@ -44,7 +45,8 @@ const say = (text) => { if (getSettings().speakBack && listener) listener.speak(
 
 function spotIntro(p, active) {
   const n = active.plan[p.id];
-  return p.id === 'ft' ? `${n} free throws` : `${p.name}, ${n} shot${n === 1 ? '' : 's'}`;
+  if (p.id === 'ft') return `${n} free throws`;
+  return `${p.name}, ${n} ${p.zone === 'layup' ? 'layup' : 'shot'}${n === 1 ? '' : 's'}`;
 }
 
 function handleSpeech(text) {
@@ -66,7 +68,9 @@ function handleSpeech(text) {
   if (r.error) { voice.message = r.error; say(r.error); render(); return; }
   if (active.pausedAt) { voice.message = 'Session is paused.'; say('Session is paused'); render(); return; }
   rest.until = 0;
-  store.recordShots(p.id, r.shots, r.dirs);
+  // Layups have no miss directions ("left"/"right" there usually means the hand).
+  if (active.kind === 'layup') r.summary = r.summary.replace(/ \(.*\)$/, '');
+  store.recordShots(p.id, r.shots, active.kind === 'layup' ? [] : r.dirs);
   buzz(30);
   voice.message = `Recorded ${r.summary}.`;
   const nowList = store.getActive().shots[p.id];
@@ -103,13 +107,14 @@ export function practiceView() {
   const score = h('div', { class: 'scorebar' },
     h('div', {}, h('div', { class: 'big', text: fmtPct(totals.made, totals.att) }), h('div', { class: 'muted', text: `${totals.made} / ${totals.att} made` })),
     h('div', { class: 'right' },
-      h('div', { class: 'session-name', text: active.name + (active.shotType ? ` · ${shotTypeLabel(active.shotType)}` : '') }),
+      h('div', { class: 'session-name', text: active.name + (active.shotType ? ` · ${shotTypeLabel(active.shotType)}` : active.kind === 'layup' ? ` · ${finishLabel(active.finish)}` : '') }),
       h('div', { text: isFT ? `${totals.att} / ${active.plan.ft} shots` : `${doneSpots} / ${spots.length} spots` }),
       run >= 3 ? h('div', { class: 'streak', text: `🔥 ${run} in a row` }) : clock),
   );
 
   const court = svg('svg', { 'aria-label': 'Half court. Tap a shooting spot to select it.' });
   const g = drawCourt(court);
+  if (active.kind === 'layup') layupSideLabels(g, spots);
   for (const p of spots) {
     const list = active.shots[p.id] || [];
     const n = active.plan[p.id];
@@ -181,7 +186,7 @@ function shotPanel(active, spots) {
   // Miss direction for the most recent miss (non-blocking; can also be done after the session).
   let dirRow = null;
   const lm = lastMiss && store.getActive().shots[lastMiss.pos]?.[lastMiss.index] === false ? lastMiss : null;
-  if (getSettings().missDir && lm && !(active.misses?.[lm.pos]?.[lm.index])) {
+  if (getSettings().missDir && active.kind !== 'layup' && lm && !(active.misses?.[lm.pos]?.[lm.index])) {
     const where = lm.pos === p.id ? `shot ${lm.index + 1}` : `${positionById(lm.pos).name}, shot ${lm.index + 1}`;
     dirRow = h('div', { class: 'dir-row' },
       h('span', { class: 'muted small', text: `Miss (${where}): which way?` }),
@@ -192,7 +197,7 @@ function shotPanel(active, spots) {
   return h('div', { class: 'panel' },
     h('div', { class: 'panel-head' },
       h('div', {}, h('h2', { text: p.name }),
-        h('div', { class: 'muted', text: `${p.id === 'ft' ? 'Free throws' : ZONES[p.zone].label} · shot ${Math.min(list.length + 1, n)} of ${n}` })),
+        h('div', { class: 'muted', text: `${zoneLabel(p)} · ${p.zone === 'layup' ? 'layup' : 'shot'} ${Math.min(list.length + 1, n)} of ${n}` })),
       pips),
     allDone ? h('p', { class: 'note', text: 'All done. Nice work! Finish the session to save it.' }) : null,
     restBanner,
@@ -277,12 +282,9 @@ function startScreen() {
       h('div', { class: 'row-between' }, h('h2', { text: 'Drills' }),
         h('button', { class: 'btn-link', onclick: () => { ui.editingDrill = null; setTab('drills'); } }, drills.length ? 'Manage' : 'Create a drill')),
       drills.length
-        ? h('ul', { class: 'drill-list' }, drills.map((d) => {
-          const total = Object.values(d.plan).reduce((a, b) => a + b, 0);
-          return h('li', {},
-            h('span', {}, h('strong', { text: d.name }), h('span', { class: 'muted small', text: `${Object.keys(d.plan).length} spots · ${total} shots${d.shotType ? ` · ${shotTypeLabel(d.shotType)}` : ''}` })),
-            h('button', { class: 'btn-secondary', onclick: () => begin({ name: d.name, drillId: d.id, shotType: d.shotType, plan: d.plan }) }, 'Start'));
-        }))
+        ? h('ul', { class: 'drill-list' }, drills.map((d) => h('li', {},
+          h('span', {}, h('strong', { text: d.name }), h('span', { class: 'muted small', text: drillSummary(d) })),
+          h('button', { class: 'btn-secondary', onclick: () => begin(drillSession(d, d.name)) }, 'Start'))))
         : h('p', { class: 'muted', text: 'Build your own sessions: pick spots, set shots per spot and a shot type like off the dribble.' })),
     h('div', { class: 'panel' },
       h('h2', { text: 'Free throws' }),
@@ -290,7 +292,46 @@ function startScreen() {
         h('span', { class: 'muted', text: 'Shots' }),
         stepper(s.ftShots, { min: 1, max: 50, label: 'free throws', onChange: (v) => updateSettings({ ftShots: v }) })),
       h('button', { class: 'btn-primary wide', onclick: () => begin({ kind: 'freethrow', name: 'Free throws', plan: { [FT_SPOT.id]: getSettings().ftShots } }) }, 'Start free throws')),
+    layupPanel(s),
   );
+}
+
+// Layups: pick which side × hand combinations, how many at each, and the finish.
+function layupPanel(s) {
+  const chosen = new Set(s.layupSpots);
+  const toggle = (id) => {
+    const next = new Set(chosen);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    if (!next.size) { toast('Pick at least one side and hand.'); return; }
+    updateSettings({ layupSpots: [...next] }); render();
+  };
+  const grid = h('div', { class: 'layup-grid', role: 'group', 'aria-label': 'Sides and hands' },
+    h('span'), h('span', { class: 'muted small', text: 'Left hand' }), h('span', { class: 'muted small', text: 'Right hand' }),
+    LAYUP_SIDES.flatMap(([side, label]) => [
+      h('span', { class: 'small', text: label }),
+      ...['left', 'right'].map((hand) => {
+        const p = LAYUP_SPOTS.find((q) => q.side === side && q.hand === hand);
+        return h('button', { class: 'chip', 'aria-pressed': String(chosen.has(p.id)), 'aria-label': p.name, onclick: () => toggle(p.id) }, chosen.has(p.id) ? '✓' : '–');
+      }),
+    ]));
+  const finish = h('select', { class: 'select', 'aria-label': 'Finish' },
+    h('option', { value: '', text: 'Mixed finishes', selected: s.layupFinish === '' }),
+    LAYUP_FINISHES.map((f) => h('option', { value: f.id, text: f.label, selected: s.layupFinish === f.id })));
+  finish.addEventListener('change', () => updateSettings({ layupFinish: finish.value }));
+  const plan = Object.fromEntries(LAYUP_SPOTS.filter((p) => chosen.has(p.id)).map((p) => [p.id, s.layupShots]));
+  return h('div', { class: 'panel' },
+    h('h2', { text: 'Layups' }),
+    h('p', { class: 'muted', text: 'Tracked separately, so they don’t change your shooting %.' }),
+    grid,
+    h('div', { class: 'row-between' },
+      h('span', { class: 'muted', text: 'Layups at each' }),
+      stepper(s.layupShots, { min: 1, max: 50, label: 'layups per side and hand', onChange: (v) => { updateSettings({ layupShots: v }); render(); } })),
+    finish,
+    h('button', { class: 'btn-primary wide', onclick: () => {
+      const st = getSettings();
+      begin({ kind: 'layup', name: 'Layups', finish: st.layupFinish || null,
+        plan: Object.fromEntries(LAYUP_SPOTS.filter((p) => st.layupSpots.includes(p.id)).map((p) => [p.id, st.layupShots])) });
+    } }, `Start layups (${Object.keys(plan).length * s.layupShots})`));
 }
 
 function finish() {
@@ -305,21 +346,24 @@ function finish() {
   const misses = t.att - t.made;
   openSheet((close) => {
     const note = h('textarea', { class: 'textarea', maxlength: 500, rows: 3, placeholder: 'Notes (optional): how you felt, what to work on…' });
+    const recent = store.recentLocations();
+    const loc = locationInput(recent[0] || '', recent);
     return [
       h('h2', { text: 'Finish session' }),
       h('p', { class: 'big-line', text: `${t.made}/${t.att} · ${fmtPct(t.made, t.att)}` }),
       remaining ? h('p', { class: 'muted', text: `${remaining} spot${remaining > 1 ? 's' : ''} not finished. They won't count.` }) : null,
+      h('label', { class: 'field-label', for: loc.input.id, text: 'Location (optional)' }), ...loc.els,
       note,
       h('div', { class: 'sheet-actions' },
         h('button', { class: 'btn-ghost', onclick: close }, 'Keep shooting'),
-        misses ? h('button', { class: 'btn-secondary', onclick: () => save(true) }, 'Save & add miss directions') : null,
+        misses && active.kind !== 'layup' ? h('button', { class: 'btn-secondary', onclick: () => save(true) }, 'Save & add miss directions') : null,
         h('button', { class: 'btn-primary', onclick: () => save(false) }, 'Save session')),
     ];
     function save(editAfter) {
       close();
-      const saved = store.finishSession(note.value.trim());
-      ui.selected = null; ui.inspect = null; ui.player = 'me'; rest.until = 0; lastMiss = null;
-      ui.range = saved.kind === 'freethrow' ? ui.range : saved.id;
+      const saved = store.finishSession(note.value.trim(), loc.input.value);
+      ui.selected = null; ui.inspect = null; ui.player = 'me'; ui.location = 'all'; ui.progressPage = 'overview'; rest.until = 0; lastMiss = null;
+      ui.range = saved.kind === 'shooting' ? saved.id : ui.range;
       toast(`Session saved: ${t.made}/${t.att} (${fmtPct(t.made, t.att)})`);
       setTab('progress');
       if (editAfter) startEditing(saved);

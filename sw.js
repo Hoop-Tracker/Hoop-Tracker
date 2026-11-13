@@ -1,12 +1,12 @@
 // Offline support: pre-cache the app shell; serve network-first, falling back to cache.
 // Only same-origin GETs are handled; GitHub API calls always go straight to the network.
-const VERSION = 'hoop-tracker-v8'; // keep in step with js/version.js
+const VERSION = 'hoop-tracker-v9'; // keep in step with js/version.js
 const ASSETS = [
   './', './index.html', './styles.css', './manifest.webmanifest',
   './js/app.js', './js/dom.js', './js/ui.js', './js/court.js', './js/store.js', './js/stats.js', './js/chart.js',
   './js/settings.js', './js/voice.js', './js/sync.js', './js/crypto.js', './js/backup.js', './js/vault.js',
   './js/version.js', './js/strength.js', './js/csv.js', './js/diagram.js',
-  './js/views/lock.js', './js/views/practice.js', './js/views/drills.js', './js/views/progress.js', './js/views/settings.js', './js/views/edit-session.js',
+  './js/views/lock.js', './js/views/practice.js', './js/views/drills.js', './js/views/progress.js', './js/views/settings.js', './js/views/edit-session.js', './js/views/shooting-stats.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
 ];
 

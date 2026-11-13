@@ -1,9 +1,9 @@
 // Local-first persistence, kept inside the encrypted vault (vault.js). Optional sync
 // (sync.js) copies it, encrypted, to a private GitHub repository.
-import { POSITION_IDS, MAX_SHOTS_PER_SPOT, POSITIONS } from './court.js';
+import { POSITION_IDS, MAX_SHOTS_PER_SPOT, POSITIONS, LAYUP_IDS } from './court.js';
 import * as vault from './vault.js';
 
-const LIMITS = { sessions: 10000, drills: 200, goals: 100, tombstones: 20000, note: 500, name: 40, description: 500, shapes: 150, favourites: 300 };
+const LIMITS = { sessions: 10000, drills: 200, goals: 100, tombstones: 20000, note: 500, name: 40, location: 40, description: 500, shapes: 150, favourites: 300 };
 
 export const SHOT_TYPES = [
   { id: 'standing', label: 'Standing / regular' },
@@ -16,6 +16,17 @@ export const SHOT_TYPES = [
   { id: 'other', label: 'Other' },
 ];
 export const shotTypeLabel = (id) => SHOT_TYPES.find((t) => t.id === id)?.label || 'Any shot';
+// How a layup session was finished (one per session; null = mixed).
+export const LAYUP_FINISHES = [
+  { id: 'regular', label: 'Regular layup' },
+  { id: 'reverse', label: 'Reverse' },
+  { id: 'euro', label: 'Euro step' },
+  { id: 'floater', label: 'Floater' },
+  { id: 'power', label: 'Power layup' },
+  { id: 'fingerroll', label: 'Finger roll' },
+  { id: 'other', label: 'Other' },
+];
+export const finishLabel = (id) => LAYUP_FINISHES.find((t) => t.id === id)?.label || 'Mixed finishes';
 export const MISS_DIRS = ['short', 'long', 'left', 'right'];
 export const SHAPE_TYPES = ['arrow', 'dash', 'line', 'circle', 'x', 'text', 'pen'];
 
@@ -72,8 +83,8 @@ export function standardPlan(n) {
   return Object.fromEntries(POSITIONS.map((p) => [p.id, n]));
 }
 
-export function startSession({ kind = 'shooting', name = 'Standard', drillId = null, drillFrom = null, shotType = null, plan }) {
-  state.active = { id: newId(), kind, name, drillId, drillFrom, shotType, startedAt: now(), endedAt: null,
+export function startSession({ kind = 'shooting', name = 'Standard', drillId = null, drillFrom = null, shotType = null, finish = null, plan }) {
+  state.active = { id: newId(), kind, name, drillId, drillFrom, shotType, finish: kind === 'layup' ? finish : null, startedAt: now(), endedAt: null,
     plan: { ...plan }, shots: {}, misses: {}, note: '', pausedMs: 0, pausedAt: null };
   persist('active');
   return state.active;
@@ -140,7 +151,20 @@ export function resumeActive() {
   persist('active');
 }
 
-export function finishSession(note = '') {
+// Where you practised (courts and hoops vary). Trimmed, single spaces, max 40 chars.
+export const cleanLocation = (v) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, LIMITS.location).trim() : '');
+
+// Locations I've used, most recent first (case-insensitive duplicates removed).
+export function recentLocations() {
+  const seen = new Map();
+  for (let i = state.sessions.length - 1; i >= 0; i--) {
+    const loc = state.sessions[i].location;
+    if (loc && !seen.has(loc.toLowerCase())) seen.set(loc.toLowerCase(), loc);
+  }
+  return [...seen.values()];
+}
+
+export function finishSession(note = '', location = '') {
   const s = state.active;
   if (!s) return null;
   if (s.pausedAt) resumeActive();
@@ -149,6 +173,7 @@ export function finishSession(note = '') {
   if (attempts > 0) {
     s.endedAt = now();
     s.note = String(note).slice(0, LIMITS.note);
+    s.location = cleanLocation(location);
     delete s.pausedAt;
     state.sessions.push(s);
     state.sessions.sort(byStart);
@@ -166,6 +191,14 @@ export function setSessionNote(id, note) {
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
   s.note = String(note).slice(0, LIMITS.note);
+  s.editedAt = now();
+  persist();
+}
+
+export function setSessionLocation(id, location) {
+  const s = state.sessions.find((x) => x.id === id);
+  if (!s) return;
+  s.location = cleanLocation(location);
   s.editedAt = now();
   persist();
 }
@@ -198,12 +231,16 @@ export function deleteSession(id) {
 }
 
 // ---------- drills ----------
-export function saveDrill({ id, name, shotType, plan, description = '', drawing = [] }) {
+// Drills are shooting drills (16 spots + shot type) or layup drills (layup spots + finish).
+export function saveDrill({ id, name, kind = 'shooting', shotType, finish = null, plan, description = '', drawing = [] }) {
   const existing = id && state.drills.find((d) => d.id === id);
+  const layup = kind === 'layup';
   const clean = {
     name: String(name || 'Untitled drill').trim().slice(0, LIMITS.name) || 'Untitled drill',
-    shotType: SHOT_TYPES.some((t) => t.id === shotType) ? shotType : null,
-    plan: Object.fromEntries(Object.entries(plan).filter(([k, v]) => POSITION_IDS.has(k) && k !== 'ft' && v > 0)
+    kind: layup ? 'layup' : 'shooting',
+    shotType: !layup && SHOT_TYPES.some((t) => t.id === shotType) ? shotType : null,
+    finish: layup && LAYUP_FINISHES.some((t) => t.id === finish) ? finish : null,
+    plan: Object.fromEntries(Object.entries(plan).filter(([k, v]) => POSITION_IDS.has(k) && k !== 'ft' && LAYUP_IDS.has(k) === layup && v > 0)
       .map(([k, v]) => [k, Math.min(MAX_SHOTS_PER_SPOT, Math.round(v))])),
     description: String(description || '').trim().slice(0, LIMITS.description),
     drawing: validDrawing(drawing) || [],
@@ -234,7 +271,8 @@ export function toggleFavourite(key) {
 // ---------- goals ----------
 export function addGoal({ scope, target, window: win, by }) {
   const g = { id: newId(), scope, target: Math.max(1, Math.min(100, Math.round(target))), window: win, by: by || null, createdAt: now() };
-  if (!validGoal(g)) return null;
+  const ok = validGoal(g);
+  if (!ok || ok === SKIP) return null;
   state.goals.push(g);
   persist();
   return g;
@@ -380,25 +418,36 @@ export function validDrawing(list) {
   return out;
 }
 
+// Forward compatibility: a well-formed session of a kind this version doesn't know yet (added by a
+// newer app version) is skipped instead of failing the whole payload. Malformed data is still rejected.
+const KINDS = ['shooting', 'freethrow', 'layup'];
+const FUTURE_KIND_RE = /^[a-z]{1,20}$/;
+const SKIP = Symbol('skip');
+
 function validSession(s, allowOpen, v1) {
   if (!isObj(s) || typeof s.id !== 'string' || !ID_RE.test(s.id) || !isIso(s.startedAt)) return null;
+  if (s.kind !== undefined && !KINDS.includes(s.kind)) return FUTURE_KIND_RE.test(s.kind) ? SKIP : null;
   let endedAt = null;
   if (s.endedAt != null) { if (!isIso(s.endedAt)) return null; endedAt = s.endedAt; } else if (!allowOpen) return null;
-  const kind = s.kind === 'freethrow' ? 'freethrow' : 'shooting';
+  const kind = s.kind === 'freethrow' || s.kind === 'layup' ? s.kind : 'shooting';
   // v1 sessions had no plan: every spot was 5 shots.
   const plan = v1 ? Object.fromEntries(POSITIONS.map((p) => [p.id, 5])) : validPlan(s.plan);
   if (!plan) return null;
+  // Layup sessions hold only layup spots, and other sessions never do.
+  if (Object.keys(plan).some((k) => LAYUP_IDS.has(k) !== (kind === 'layup'))) return null;
   const shots = validShots(plan, s.shots);
   if (!shots) return null;
   const misses = validMisses(shots, s.misses);
   if (!misses) return null;
   const out = {
     id: s.id, kind, startedAt: s.startedAt, endedAt, plan, shots, misses,
-    name: cleanStr(s.name, LIMITS.name) || (kind === 'freethrow' ? 'Free throws' : 'Standard'),
+    name: cleanStr(s.name, LIMITS.name) || (kind === 'freethrow' ? 'Free throws' : kind === 'layup' ? 'Layups' : 'Standard'),
     drillId: typeof s.drillId === 'string' && ID_RE.test(s.drillId) ? s.drillId : null,
     drillFrom: typeof s.drillFrom === 'string' && PLAYER_RE.test(s.drillFrom) ? s.drillFrom : null,
-    shotType: SHOT_TYPES.some((t) => t.id === s.shotType) ? s.shotType : null,
+    shotType: kind === 'shooting' && SHOT_TYPES.some((t) => t.id === s.shotType) ? s.shotType : null,
+    finish: kind === 'layup' && LAYUP_FINISHES.some((t) => t.id === s.finish) ? s.finish : null,
     note: cleanStr(s.note, LIMITS.note),
+    location: cleanLocation(s.location),
     pausedMs: Number.isInteger(s.pausedMs) && s.pausedMs >= 0 && s.pausedMs < 1e9 ? s.pausedMs : 0,
   };
   if (allowOpen && !endedAt) out.pausedAt = isIso(s.pausedAt) ? s.pausedAt : null;
@@ -406,21 +455,30 @@ function validSession(s, allowOpen, v1) {
   return out;
 }
 
+const DRILL_KINDS = ['shooting', 'layup'];
 function validDrill(d) {
   if (!isObj(d) || typeof d.id !== 'string' || !ID_RE.test(d.id) || !isIso(d.createdAt) || !isIso(d.updatedAt)) return null;
+  // Forward compatibility: a drill type from a newer version is skipped, not fatal.
+  if (d.kind !== undefined && !DRILL_KINDS.includes(d.kind)) return FUTURE_KIND_RE.test(d.kind) ? SKIP : null;
+  const layup = d.kind === 'layup';
   const plan = validPlan(d.plan);
-  if (!plan || plan.ft) return null;
+  if (!plan || plan.ft || Object.keys(plan).some((k) => LAYUP_IDS.has(k) !== layup)) return null;
   const drawing = validDrawing(d.drawing);
   if (!drawing) return null;
-  return { id: d.id, name: cleanStr(d.name, LIMITS.name) || 'Untitled drill', shotType: SHOT_TYPES.some((t) => t.id === d.shotType) ? d.shotType : null,
+  return { id: d.id, name: cleanStr(d.name, LIMITS.name) || 'Untitled drill', kind: layup ? 'layup' : 'shooting',
+    shotType: !layup && SHOT_TYPES.some((t) => t.id === d.shotType) ? d.shotType : null,
+    finish: layup && LAYUP_FINISHES.some((t) => t.id === d.finish) ? d.finish : null,
     plan, description: cleanStr(d.description, LIMITS.description), drawing, createdAt: d.createdAt, updatedAt: d.updatedAt };
 }
 
-const GOAL_SCOPE_RE = /^(all|ft|zone:(close|mid|three|deep)|pos:[a-z0-9-]{1,8})$/;
+const GOAL_SCOPE_RE = /^(all|ft|layup|layup:(lh|rh)|zone:(close|mid|three|deep)|pos:[a-z0-9-]{1,8})$/;
+const FUTURE_SCOPE_RE = /^[a-z0-9:-]{1,30}$/;
 function validGoal(g) {
   if (!isObj(g) || typeof g.id !== 'string' || !ID_RE.test(g.id) || !isIso(g.createdAt)) return null;
-  if (typeof g.scope !== 'string' || !GOAL_SCOPE_RE.test(g.scope)) return null;
-  if (g.scope.startsWith('pos:') && !POSITION_IDS.has(g.scope.slice(4))) return null;
+  if (typeof g.scope !== 'string') return null;
+  // Forward compatibility: a goal type from a newer version is skipped, not fatal.
+  if (!GOAL_SCOPE_RE.test(g.scope)) return FUTURE_SCOPE_RE.test(g.scope) ? SKIP : null;
+  if (g.scope.startsWith('pos:') && (!POSITION_IDS.has(g.scope.slice(4)) || LAYUP_IDS.has(g.scope.slice(4)))) return null;
   if (!Number.isInteger(g.target) || g.target < 1 || g.target > 100) return null;
   if (!['last5', 'last10', '30d'].includes(g.window)) return null;
   if (g.by != null && !(typeof g.by === 'string' && DATE_RE.test(g.by))) return null;
@@ -431,7 +489,12 @@ function validList(list, fn, max) {
   if (list === undefined) return [];
   if (!Array.isArray(list) || list.length > max) return null;
   const out = [];
-  for (const x of list) { const v = fn(x); if (!v) return null; out.push(v); }
+  for (const x of list) {
+    const v = fn(x);
+    if (v === SKIP) continue; // from a newer app version: left for that version to handle
+    if (!v) return null;
+    out.push(v);
+  }
   return out;
 }
 
@@ -456,6 +519,6 @@ function validateData(d) {
   const v1 = d.version === 1;
   const payload = validatePayload(d, v1);
   if (!payload) return null;
-  const active = d.active ? validSession(d.active, true, v1) : null;
-  return { version: 2, ...payload, active };
+  const act = d.active ? validSession(d.active, true, v1) : null;
+  return { version: 2, ...payload, active: act === SKIP ? null : act };
 }

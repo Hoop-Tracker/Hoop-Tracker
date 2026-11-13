@@ -1,7 +1,7 @@
 // Spreadsheet export: one row per session per spot. NOT encrypted (by design, it's
 // for Excel / Google Sheets), so the UI makes the user confirm explicitly.
-import { positionById, planSpots, ZONES } from './court.js';
-import { shotTypeLabel } from './store.js';
+import { positionById, planSpots, zoneLabel } from './court.js';
+import { shotTypeLabel, finishLabel } from './store.js';
 
 // Neutralise spreadsheet formula injection (=, +, -, @ at the start of a cell).
 function cell(v) {
@@ -12,7 +12,7 @@ function cell(v) {
 
 export function sessionsToCSV(sessions) {
   const head = ['date', 'time', 'session', 'kind', 'shot_type', 'drill_from', 'spot', 'zone', 'planned', 'attempts', 'made', 'pct',
-    'miss_short', 'miss_long', 'miss_left', 'miss_right', 'duration_min', 'note'];
+    'miss_short', 'miss_long', 'miss_left', 'miss_right', 'duration_min', 'location', 'note'];
   const rows = [head];
   for (const s of sessions) {
     const d = new Date(s.startedAt);
@@ -25,9 +25,10 @@ export function sessionsToCSV(sessions) {
       const made = list.filter(Boolean).length;
       const dirs = s.misses?.[p.id] || [];
       const count = (k) => dirs.filter((x) => x === k).length;
-      rows.push([date, time, s.name, s.kind, s.shotType ? shotTypeLabel(s.shotType) : '', s.drillFrom || '',
-        positionById(p.id).name, p.zone === 'ft' ? 'Free throws' : ZONES[p.zone].label, s.plan[p.id], list.length, made,
-        Math.round((made / list.length) * 100), count('short'), count('long'), count('left'), count('right'), mins, s.note || '']);
+      const type = s.shotType ? shotTypeLabel(s.shotType) : s.kind === 'layup' ? finishLabel(s.finish) : '';
+      rows.push([date, time, s.name, s.kind, type, s.drillFrom || '',
+        positionById(p.id).name, zoneLabel(p), s.plan[p.id], list.length, made,
+        Math.round((made / list.length) * 100), count('short'), count('long'), count('left'), count('right'), mins, s.location || '', s.note || '']);
     }
   }
   return `﻿${rows.map((r) => r.map(cell).join(',')).join('\r\n')}\r\n`;

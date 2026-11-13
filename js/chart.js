@@ -13,6 +13,26 @@ function points(sessions, zone) {
     .map((p) => ({ ...p, v: pct(p.made, p.att) }));
 }
 
+// Tiny trend line for a list of percentages (oldest first). Dashed line = 50%.
+// The last point is dotted so "where you are now" stands out.
+// Optional second series (a teammate) is drawn first, in the second series colour, so yours sits on top.
+export function sparkline(values, label = '', second = null) {
+  const w = 96, hgt = 28, pad = 3;
+  const root = svg('svg', { viewBox: `0 0 ${w} ${hgt}`, class: 'spark', role: 'img',
+    'aria-label': values.length ? `${label} last ${values.length} sessions: ${values.join(', ')}%` : `${label}: no data` });
+  const y = (v) => pad + (hgt - 2 * pad) * (1 - v / 100);
+  root.append(svg('line', { x1: 0, x2: w, y1: y(50), y2: y(50), class: 'spark-mid' }));
+  const line = (vals, cls) => {
+    if (!vals?.length) return;
+    const x = (i) => (vals.length === 1 ? w / 2 : pad + (i / (vals.length - 1)) * (w - 2 * pad));
+    if (vals.length > 1) root.append(svg('path', { class: `spark-line ${cls}`, d: vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ') }));
+    root.append(svg('circle', { class: `spark-dot ${cls}`, cx: x(vals.length - 1), cy: y(vals.at(-1)), r: 2.6 }));
+  };
+  line(second, 's2');
+  line(values, 's1');
+  return root;
+}
+
 // series: [{ label, sessions, cls: 's1' | 's2' }]
 export function trendChart(series, zone) {
   const sets = series.map((s) => ({ ...s, pts: points(s.sessions, zone) })).filter((s) => s.pts.length);

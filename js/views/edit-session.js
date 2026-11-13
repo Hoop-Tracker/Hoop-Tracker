@@ -1,6 +1,6 @@
 // Correct the shots of a finished session: flip make/miss, add or remove shots.
 import { h, svg } from '../dom.js';
-import { ZONES, drawCourt, positionById, planSpots } from '../court.js';
+import { drawCourt, positionById, planSpots, zoneLabel, layupSideLabels } from '../court.js';
 import * as store from '../store.js';
 import { sessionTotals, fmtPct, shortDate } from '../stats.js';
 import { ui, render, toast } from '../ui.js';
@@ -23,6 +23,7 @@ export function editSessionView() {
   if (!session || !draft || draft.id !== session.id) { ui.editingSession = null; draft = null; return h('div'); }
   const spots = planSpots(session.plan);
   const isFT = session.kind === 'freethrow';
+  const isLayup = session.kind === 'layup';
   const t = sessionTotals({ shots: draft.shots }, isFT ? 'ft' : 'all');
   const original = sessionTotals(session, isFT ? 'ft' : 'all');
   // Keep miss directions lined up with the shots (drop extras, and directions on makes).
@@ -35,6 +36,7 @@ export function editSessionView() {
 
   const court = svg('svg', { 'aria-label': 'Tap a spot to edit its shots' });
   const g = drawCourt(court);
+  if (isLayup) layupSideLabels(g, spots);
   for (const p of spots) {
     const list = draft.shots[p.id] || [];
     const made = list.filter(Boolean).length;
@@ -69,7 +71,7 @@ export function editSessionView() {
     arr[i] = arr[i] === d ? null : d;
     render();
   };
-  const missRows = list.map((v, i) => (v ? null : h('div', { class: 'dir-edit' },
+  const missRows = isLayup ? [] : list.map((v, i) => (v ? null : h('div', { class: 'dir-edit' },
     h('span', { class: 'small', text: `Shot ${i + 1}` }),
     h('div', { class: 'dir-buttons' }, [['short', 'Short'], ['long', 'Long'], ['left', '←'], ['right', '→']].map(([d, label]) =>
       h('button', { class: 'chip', 'aria-pressed': String(dirs[i] === d), 'aria-label': `Shot ${i + 1} missed ${d}`, onclick: () => setDir(i, d) }, label))))))
@@ -78,7 +80,7 @@ export function editSessionView() {
   return h('section', { class: 'view edit-session' },
     h('div', { class: 'row-between' },
       h('button', { class: 'btn-link', onclick: () => { if (!changed || confirm('Discard your changes?')) stop(); } }, '‹ Cancel'),
-      h('h2', { text: 'Edit shots' }),
+      h('h2', { text: isLayup ? 'Edit layups' : 'Edit shots' }),
       h('span', {})),
     h('p', { class: 'muted center', text: `${session.name} · ${shortDate(session.startedAt)}` }),
     h('div', { class: 'tiles' },
@@ -86,7 +88,7 @@ export function editSessionView() {
       h('div', { class: 'tile' }, h('div', { class: 'tile-value', text: `${t.made}/${t.att}` }), h('div', { class: 'tile-label', text: `was ${original.made}/${original.att}` }))),
     isFT ? null : h('div', { class: 'court-wrap' }, court),
     h('div', { class: 'panel' },
-      h('div', {}, h('h2', { text: p.name }), h('div', { class: 'muted small', text: `${isFT ? 'Free throws' : ZONES[p.zone].label} · ${list.length} of ${cap} shots` })),
+      h('div', {}, h('h2', { text: p.name }), h('div', { class: 'muted small', text: `${zoneLabel(p)} · ${list.length} of ${cap} ${isLayup ? 'layups' : 'shots'}` })),
       h('p', { class: 'muted small', text: 'Tap a shot to switch it between make and miss.' }),
       shotButtons,
       h('div', { class: 'row wrap' },
@@ -100,7 +102,7 @@ export function editSessionView() {
         if (!t.att) { toast('Every shot is removed. Delete the session instead (Progress → session → Delete).', 4000); return; }
         if (!store.updateSessionShots(session.id, draft.shots, draft.misses)) { toast('Could not save those changes.'); return; }
         toast('Session updated.');
-        ui.range = isFT ? ui.range : session.id;
+        ui.range = session.kind === 'shooting' ? session.id : ui.range;
         stop();
       } }, 'Save changes')),
   );
